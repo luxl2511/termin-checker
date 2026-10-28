@@ -1,0 +1,19 @@
+[package]
+name = "termin-checker"
+version = "0.1.0"
+edition = "2021"
+description = "Appointment watcher for tevis.krzn.de (Herne) and termine.bochum.de"
+license = "MIT"
+
+[dependencies]
+anyhow = "1"
+chrono = { version = "0.4", features = ["serde"] }
+clap = { version = "4", features = ["derive"] }
+crossterm = "0.28"
+ratatui = "0.29"
+reqwest = { version = "0.12", features = ["blocking", "cookies"] }
+scraper = "0.22"
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"
+dirs = "6"
+regex = "1"
