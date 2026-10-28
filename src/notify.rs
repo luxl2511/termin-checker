@@ -72,6 +72,9 @@ pub fn send_desktop_notification(title: &str, subtitle: &str, message: &str) -> 
 
     #[cfg(target_os = "windows")]
     {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        // NOTE: Windows drops toasts from app ids that are not registered, so we need to borrow the id of PowerShell which every Windows has.
         let script = format!(
             "[Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime] > $null; \
              $template = [Windows.UI.Notifications.ToastNotificationManager]::GetTemplateContent([Windows.UI.Notifications.ToastTemplateType]::ToastText02); \
@@ -79,12 +82,13 @@ pub fn send_desktop_notification(title: &str, subtitle: &str, message: &str) -> 
              $textNodes.Item(0).AppendChild($template.CreateTextNode('{}')) > $null; \
              $textNodes.Item(1).AppendChild($template.CreateTextNode('{}')) > $null; \
              $toast = [Windows.UI.Notifications.ToastNotification]::new($template); \
-             [Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier('termin-checker').Show($toast)",
+             [Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier('{{1AC14E77-02E7-4E5D-B744-2EB1AE5198B7}}\\WindowsPowerShell\\v1.0\\powershell.exe').Show($toast)",
             title.replace('\'', "''"),
             format!("{} - {}", subtitle, message).replace('\'', "''"),
         );
         std::process::Command::new("powershell")
-            .args(["-Command", &script])
+            .args(["-NoProfile", "-Command", &script])
+            .creation_flags(CREATE_NO_WINDOW)
             .output()?;
     }
 
@@ -99,8 +103,8 @@ pub fn open_url(url: &str) -> Result<()> {
     std::process::Command::new("xdg-open").arg(url).spawn()?;
 
     #[cfg(target_os = "windows")]
-    std::process::Command::new("cmd")
-        .args(["/C", "start", "", url])
+    std::process::Command::new("rundll32")
+        .args(["url.dll,FileProtocolHandler", url])
         .spawn()?;
 
     Ok(())
