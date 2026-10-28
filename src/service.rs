@@ -3,7 +3,7 @@ use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
 
-#[cfg(any(target_os = "linux", target_os = "windows"))]
+#[cfg(target_os = "linux")]
 const SERVICE_NAME: &str = "termin-checker";
 
 fn binary_path() -> Result<String> {
@@ -210,61 +210,125 @@ pub fn is_running() -> bool {
 #[cfg(target_os = "windows")]
 const TASK_NAME: &str = "TerminChecker";
 
+/// Run a command without opening a console window and fail with its output if it exits with an error.
+#[cfg(target_os = "windows")]
+fn run_hidden(program: &str, args: &[&str]) -> Result<String> {
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    let out = Command::new(program)
+        .args(args)
+        .creation_flags(CREATE_NO_WINDOW)
+        .output()
+        .with_context(|| format!("Failed to run {}", program))?;
+    let text = String::from_utf8_lossy(&out.stdout).to_string();
+    if !out.status.success() {
+        anyhow::bail!(
+            "{} {} failed: {}{}",
+            program,
+            args.join(" "),
+            text.trim(),
+            String::from_utf8_lossy(&out.stderr).trim()
+        );
+    }
+    Ok(text)
+}
+
+/// Build the Task Scheduler XML that starts the watcher every 15 minutes if it is not running.
+#[cfg(target_os = "windows")]
+fn task_xml(bin: &str) -> String {
+    let bin = bin.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;");
+    // NOTE: schtasks defaults would kill the watcher after 72 hours and on battery, so we need the XML to switch both off, IgnoreNew makes the 15 minute repetition a restart if the watcher died.
+    format!(
+        r#"<?xml version="1.0" encoding="UTF-16"?>
+<Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
+  <RegistrationInfo><Description>Termin-Checker watcher</Description></RegistrationInfo>
+  <Triggers>
+    <CalendarTrigger>
+      <Repetition><Interval>PT15M</Interval><Duration>P1D</Duration><StopAtDurationEnd>false</StopAtDurationEnd></Repetition>
+      <StartBoundary>2026-01-01T00:00:00</StartBoundary>
+      <Enabled>true</Enabled>
+      <ScheduleByDay><DaysInterval>1</DaysInterval></ScheduleByDay>
+    </CalendarTrigger>
+  </Triggers>
+  <Principals><Principal id="Author"><LogonType>InteractiveToken</LogonType><RunLevel>LeastPrivilege</RunLevel></Principal></Principals>
+  <Settings>
+    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
+    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
+    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
+    <AllowHardTerminate>true</AllowHardTerminate>
+    <StartWhenAvailable>true</StartWhenAvailable>
+    <RunOnlyIfNetworkAvailable>false</RunOnlyIfNetworkAvailable>
+    <IdleSettings><StopOnIdleEnd>false</StopOnIdleEnd><RestartOnIdle>false</RestartOnIdle></IdleSettings>
+    <AllowStartOnDemand>true</AllowStartOnDemand>
+    <Enabled>true</Enabled>
+    <Hidden>false</Hidden>
+    <RunOnlyIfIdle>false</RunOnlyIfIdle>
+    <WakeToRun>false</WakeToRun>
+    <ExecutionTimeLimit>PT0S</ExecutionTimeLimit>
+    <Priority>7</Priority>
+  </Settings>
+  <Actions Context="Author"><Exec><Command>{bin}</Command><Arguments>watch</Arguments></Exec></Actions>
+</Task>"#,
+        bin = bin
+    )
+}
+
 #[cfg(target_os = "windows")]
 pub fn install() -> Result<()> {
     let bin = binary_path()?;
+    let xml_path = log_dir()?.join("task.xml");
 
-    // Create a task that runs at logon and restarts daily at 06:30
-    Command::new("schtasks")
-        .args([
-            "/Create",
-            "/TN", TASK_NAME,
-            "/TR", &format!("\"{}\" watch", bin),
-            "/SC", "DAILY",
-            "/ST", "06:30",
-            "/F",
-        ])
-        .output()
-        .context("Failed to create scheduled task")?;
+    // NOTE: schtasks only reads the XML as UTF-16 with BOM, so we need to encode it by hand.
+    let mut bytes = vec![0xFF, 0xFE];
+    for unit in task_xml(&bin).encode_utf16() {
+        bytes.extend_from_slice(&unit.to_le_bytes());
+    }
+    fs::write(&xml_path, bytes)?;
 
-    // Also start it immediately
-    Command::new("schtasks")
-        .args(["/Run", "/TN", TASK_NAME])
-        .output()
-        .context("Failed to start scheduled task")?;
+    let xml_arg = xml_path.to_string_lossy().to_string();
+    run_hidden("schtasks", &["/Create", "/TN", TASK_NAME, "/XML", &xml_arg, "/F"])?;
+    let _ = fs::remove_file(&xml_path);
+    run_hidden("schtasks", &["/Run", "/TN", TASK_NAME])?;
+    Ok(())
+}
 
+/// Delete the scheduled task without stopping a running watcher, used by the watcher itself at the deadline.
+#[cfg(target_os = "windows")]
+pub fn delete_task() -> Result<()> {
+    run_hidden("schtasks", &["/Delete", "/TN", TASK_NAME, "/F"])?;
     Ok(())
 }
 
 #[cfg(target_os = "windows")]
 pub fn uninstall() -> Result<()> {
-    // End the running task
-    let _ = Command::new("schtasks")
-        .args(["/End", "/TN", TASK_NAME])
-        .output();
-    Command::new("schtasks")
-        .args(["/Delete", "/TN", TASK_NAME, "/F"])
-        .output()
-        .context("Failed to delete scheduled task")?;
-    Ok(())
+    let _ = run_hidden("schtasks", &["/End", "/TN", TASK_NAME]);
+    delete_task()
 }
 
 #[cfg(target_os = "windows")]
 pub fn is_installed() -> bool {
-    Command::new("schtasks")
-        .args(["/Query", "/TN", TASK_NAME])
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
+    run_hidden("schtasks", &["/Query", "/TN", TASK_NAME]).is_ok()
 }
 
 #[cfg(target_os = "windows")]
 pub fn is_running() -> bool {
-    Command::new("schtasks")
-        .args(["/Query", "/TN", TASK_NAME, "/FO", "CSV", "/V"])
-        .output()
-        .map(|o| {
-            String::from_utf8_lossy(&o.stdout).contains("Running")
-        })
-        .unwrap_or(false)
+    // NOTE: schtasks prints the status localized ("Wird ausgeführt" on German Windows), Get-ScheduledTask gives the plain enum name.
+    run_hidden(
+        "powershell",
+        &["-NoProfile", "-Command", &format!("(Get-ScheduledTask -TaskName {}).State", TASK_NAME)],
+    )
+    .map(|state| state.trim() == "Running")
+    .unwrap_or(false)
+}
+
+#[cfg(all(test, target_os = "windows"))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn task_xml_escapes_path_and_disables_time_limit() {
+        let xml = task_xml(r"C:\Users\A&B\termin-checker.exe");
+        assert!(xml.contains(r"<Command>C:\Users\A&amp;B\termin-checker.exe</Command>"));
+        assert!(xml.contains("<ExecutionTimeLimit>PT0S</ExecutionTimeLimit>"));
+    }
 }

@@ -1,5 +1,6 @@
 use anyhow::Result;
 use chrono::{Local, Timelike};
+use std::io::Write;
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -13,6 +14,9 @@ const ERROR_COOLDOWN: Duration = Duration::from_secs(1800); // 30 min
 const ERROR_THRESHOLD: u32 = 5;
 
 pub fn run() -> Result<()> {
+    #[cfg(windows)]
+    hide_own_console();
+
     let config = Config::load()?;
     let deadline = config.deadline_parsed();
     let latest_date = config.latest_date_parsed();
@@ -22,21 +26,24 @@ pub fn run() -> Result<()> {
     let mut last_error_notify = Instant::now() - ERROR_COOLDOWN;
     let mut consecutive_errors: u32 = 0;
 
-    eprintln!(
+    log(&format!(
         "[termin-checker] Provider: {} — Watching {} @ {}",
         config.provider, config.service_name, config.location_name
-    );
+    ));
     if let Some(d) = &config.latest_date {
-        eprintln!("[termin-checker] Latest date: {}", d);
+        log(&format!("[termin-checker] Latest date: {}", d));
     }
-    eprintln!("[termin-checker] Deadline: {}", config.deadline);
-    eprintln!("[termin-checker] ntfy topic: {}", config.ntfy_topic);
+    log(&format!("[termin-checker] Deadline: {}", config.deadline));
+    log(&format!("[termin-checker] ntfy topic: {}", config.ntfy_topic));
 
     loop {
         // Check deadline
         if let Some(dl) = deadline {
             if Local::now().date_naive() > dl {
-                eprintln!("[termin-checker] Deadline reached, stopping.");
+                log(&format!("[termin-checker] Deadline reached, stopping."));
+                // NOTE: Task Scheduler restarts us every 15 minutes, so on Windows we remove the task here, otherwise a console window pops up every 15 minutes until somebody stops it.
+                #[cfg(windows)]
+                let _ = crate::service::delete_task();
                 break;
             }
         }
@@ -47,10 +54,10 @@ pub fn run() -> Result<()> {
             Ok(CheckResult::NoAppointments) => {
                 consecutive_errors = 0;
                 let now = Local::now();
-                eprintln!(
+                log(&format!(
                     "[{}] Keine Termine verfügbar.",
                     now.format("%H:%M:%S")
-                );
+                ));
             }
             Ok(CheckResult::Appointments(slots)) => {
                 consecutive_errors = 0;
@@ -59,11 +66,11 @@ pub fn run() -> Result<()> {
                     .map(|s| format!("  {} {}: {}", s.day_name, s.date, s.times.join(", ")))
                     .collect::<Vec<_>>()
                     .join("\n");
-                eprintln!(
+                log(&format!(
                     "[{}] TERMINE GEFUNDEN!\n{}",
                     Local::now().format("%H:%M:%S"),
                     slot_summary
-                );
+                ));
 
                 if last_notify.elapsed() >= NOTIFY_COOLDOWN {
                     last_notify = Instant::now();
@@ -93,20 +100,20 @@ pub fn run() -> Result<()> {
             Ok(CheckResult::AllTooLate(slots)) => {
                 consecutive_errors = 0;
                 let dates: Vec<String> = slots.iter().map(|s| s.date.clone()).collect();
-                eprintln!(
+                log(&format!(
                     "[{}] Keine passenden Termine. Früheste Slots: {}",
                     Local::now().format("%H:%M:%S"),
                     dates.join(", ")
-                );
+                ));
             }
             Ok(CheckResult::Error(msg)) => {
                 consecutive_errors += 1;
-                eprintln!(
+                log(&format!(
                     "[{}] Fehler: {} (#{} in Folge)",
                     Local::now().format("%H:%M:%S"),
                     msg,
                     consecutive_errors
-                );
+                ));
                 maybe_notify_error(
                     &config.ntfy_topic,
                     &msg,
@@ -116,12 +123,12 @@ pub fn run() -> Result<()> {
             }
             Err(e) => {
                 consecutive_errors += 1;
-                eprintln!(
+                log(&format!(
                     "[{}] Request-Fehler: {} (#{} in Folge)",
                     Local::now().format("%H:%M:%S"),
                     e,
                     consecutive_errors
-                );
+                ));
                 maybe_notify_error(
                     &config.ntfy_topic,
                     &e.to_string(),
@@ -135,6 +142,38 @@ pub fn run() -> Result<()> {
     }
 
     Ok(())
+}
+
+/// Print a log line to stderr, on Windows also append it to watcher.log since Task Scheduler has no output redirect.
+fn log(line: &str) {
+    let _ = writeln!(std::io::stderr(), "{}", line);
+    #[cfg(windows)]
+    if let Ok(dir) = Config::config_dir() {
+        let file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(dir.join("watcher.log"));
+        if let Ok(mut file) = file {
+            let _ = writeln!(file, "{}", line);
+        }
+    }
+}
+
+/// Detach from the console window if we are the only process in it, so Task Scheduler runs leave no window open.
+#[cfg(windows)]
+fn hide_own_console() {
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn GetConsoleProcessList(list: *mut u32, count: u32) -> u32;
+        fn FreeConsole() -> i32;
+    }
+    let mut ids = [0u32; 2];
+    // NOTE: one process in the console means the console was made just for us (Task Scheduler or double click), when started from cmd or PowerShell the shell is in the list too and we keep the output.
+    unsafe {
+        if GetConsoleProcessList(ids.as_mut_ptr(), 2) == 1 {
+            FreeConsole();
+        }
+    }
 }
 
 fn sleep_interval() {

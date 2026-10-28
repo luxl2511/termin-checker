@@ -15,7 +15,7 @@ Download the archive for your system from the [releases page](https://github.com
 | Windows | `termin-checker-x86_64-pc-windows-msvc.zip` |
 | Linux | `termin-checker-x86_64-unknown-linux-gnu.tar.gz` |
 
-Unpack it and double-click `termin-checker`. A browser tab opens with the setup page.
+Unpack it to a folder that stays, for example your user folder, and double-click `termin-checker`. A browser tab opens with the setup page. The background service starts the binary from that location, so do not run it from inside the zip or from a temporary folder.
 
 The binaries are not signed. On macOS, Gatekeeper blocks the first start. Open System Settings, Privacy & Security, and click "Open Anyway", or run `xattr -d com.apple.quarantine termin-checker` once. Windows SmartScreen shows a similar warning. There, choose "More info" and then "Run anyway".
 
@@ -72,9 +72,9 @@ The loop waits 20 seconds between checks from 06:30 to 09:00, when many offices 
 |--------|---------|-------|
 | macOS | Launch Agent `~/Library/LaunchAgents/com.lukas.termin-checker.plist`, runs under `caffeinate` so the Mac does not sleep | at login, weekdays 06:30, restart after a crash |
 | Linux | systemd user unit `~/.config/systemd/user/termin-checker.service` | at login, restart after a crash |
-| Windows | Task Scheduler task `TerminChecker` | daily 06:30 and right after install |
+| Windows | Task Scheduler task `TerminChecker`, no time limit, also on battery | right after install, then every 15 minutes if not running, removed at the end date |
 
-On macOS and Linux the log goes to `~/.config/termin-checker/watcher.log`.
+The log goes to `~/.config/termin-checker/watcher.log` on all systems.
 
 ## Configuration
 
@@ -136,7 +136,7 @@ src/
 
 ## Release
 
-Pushing a tag `v*` runs `.github/workflows/build.yml`. It tests and builds on Linux, Windows and macOS (Apple silicon and Intel) and attaches the archives to a GitHub release.
+Every push to `main`, every pull request and every tag `v*` runs `.github/workflows/build.yml`. It runs the unit tests and builds on Linux, Windows and macOS (Apple silicon and Intel). `ci/smoke.sh` then tests the built binary on the runner: a live check, the web interface with its token and host checks, and on macOS and Windows installing, checking and removing the background service. A tag also attaches the archives to a GitHub release.
 
 ## License
 

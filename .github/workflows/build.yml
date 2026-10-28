@@ -27,6 +27,9 @@ jobs:
       - if: matrix.target != 'x86_64-apple-darwin'
         run: cargo test --release --locked --target ${{ matrix.target }}
       - run: cargo build --release --locked --target ${{ matrix.target }}
+      - if: matrix.target != 'x86_64-apple-darwin'
+        shell: bash
+        run: bash ci/smoke.sh target/${{ matrix.target }}/release/termin-checker
       - name: Package
         shell: bash
         run: |
