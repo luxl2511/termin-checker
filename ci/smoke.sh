@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# NOTE: we grep captured output instead of piping, grep -q closes the pipe early and the binary then panics on the broken pipe.
+
 # NOTE: this overwrites the config and installs the real background service, so we only run it on throwaway CI runners.
 if [ "${CI:-}" != true ]; then
   echo "ci/smoke.sh only runs in CI, it overwrites ~/.config/termin-checker/config.toml" >&2
@@ -30,7 +32,7 @@ echo "--- web"
 web_pid=$!
 for _ in $(seq 30); do grep -q "http://" web.out && break; sleep 1; done
 url=$(grep -o 'http://[0-9.:]*' web.out)
-curl -fsS "$url/" | grep -q "Letzte Suche fortsetzen"
+grep -q "Letzte Suche fortsetzen" <<<"$(curl -fsS "$url/")"
 test "$(curl -s -o /dev/null -w '%{http_code}' -X POST "$url/check")" = 403
 test "$(curl -s -o /dev/null -w '%{http_code}' -H 'Host: evil.example' "$url/")" = 403
 kill "$web_pid" || true
@@ -42,12 +44,13 @@ fi
 
 echo "--- service"
 "$bin" install
-for _ in $(seq 30); do "$bin" status | grep -q "Watcher: aktiv" && break; sleep 2; done
-"$bin" status
-"$bin" status | grep -q "Watcher: aktiv"
+for _ in $(seq 30); do grep -q "Watcher: aktiv" <<<"$("$bin" status)" && break; sleep 2; done
+status=$("$bin" status)
+echo "$status"
+grep -q "Watcher: aktiv" <<<"$status"
 for _ in $(seq 30); do grep -q "Provider: bochum" "$cfg_dir/watcher.log" 2>/dev/null && break; sleep 2; done
 cat "$cfg_dir/watcher.log"
 grep -q "Provider: bochum" "$cfg_dir/watcher.log"
 "$bin" stop
-"$bin" status | grep -q "Watcher: nicht installiert"
+grep -q "Watcher: nicht installiert" <<<"$("$bin" status)"
 echo "--- ok"
