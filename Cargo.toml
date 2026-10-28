@@ -1,6 +1,6 @@
 [package]
 name = "termin-checker"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 description = "Appointment watcher for tevis.krzn.de (Herne) and termine.bochum.de"
 license = "MIT"
